@@ -50,22 +50,16 @@
 bool printfNPPinfo(int argc, char *argv[])
 {
     const NppLibraryVersion *libVer = nppGetLibVersion();
-
-    printf("NPP Library Version %d.%d.%d\n", libVer->major, libVer->minor,
-           libVer->build);
+    printf("NPP Library Version %d.%d.%d\n", libVer->major, libVer->minor, libVer->build);
 
     int driverVersion, runtimeVersion;
     cudaDriverGetVersion(&driverVersion);
     cudaRuntimeGetVersion(&runtimeVersion);
 
-    printf("  CUDA Driver  Version: %d.%d\n", driverVersion / 1000,
-           (driverVersion % 100) / 10);
-    printf("  CUDA Runtime Version: %d.%d\n", runtimeVersion / 1000,
-           (runtimeVersion % 100) / 10);
+    printf("  CUDA Driver  Version: %d.%d\n", driverVersion / 1000, (driverVersion % 100) / 10);
+    printf("  CUDA Runtime Version: %d.%d\n", runtimeVersion / 1000, (runtimeVersion % 100) / 10);
 
-    // Min spec is SM 1.0 devices
-    bool bVal = checkCudaCapabilities(1, 0);
-    return bVal;
+    return checkCudaCapabilities(1, 0);
 }
 
 int main(int argc, char *argv[])
@@ -79,7 +73,7 @@ int main(int argc, char *argv[])
 
         findCudaDevice(argc, (const char **)argv);
 
-        if (printfNPPinfo(argc, argv) == false)
+        if (!printfNPPinfo(argc, argv))
         {
             exit(EXIT_SUCCESS);
         }
@@ -93,96 +87,50 @@ int main(int argc, char *argv[])
             filePath = sdkFindFilePath("Lena.pgm", argv[0]);
         }
 
-        if (filePath)
-        {
-            sFilename = filePath;
-        }
-        else
-        {
-            sFilename = "Lena.pgm";
-        }
+        sFilename = filePath ? filePath : "Lena.pgm";
 
-        // if we specify the filename at the command line, then we only test
-        // sFilename[0].
-        int file_errors = 0;
-        std::ifstream infile(sFilename.data(), std::ifstream::in);
-
-        if (infile.good())
+        std::ifstream infile(sFilename.data());
+        if (!infile.good())
         {
-            std::cout << "nppiRotate opened: <" << sFilename.data()
-                      << "> successfully!" << std::endl;
-            file_errors = 0;
-            infile.close();
-        }
-        else
-        {
-            std::cout << "nppiRotate unable to open: <" << sFilename.data() << ">"
-                      << std::endl;
-            file_errors++;
-            infile.close();
-        }
-
-        if (file_errors > 0)
-        {
+            std::cerr << "Unable to open: <" << sFilename.data() << ">\n";
             exit(EXIT_FAILURE);
         }
+        infile.close();
 
         std::string sResultFilename = sFilename;
-
         std::string::size_type dot = sResultFilename.rfind('.');
-
         if (dot != std::string::npos)
         {
             sResultFilename = sResultFilename.substr(0, dot);
         }
-
-        sResultFilename += "_rotate.pgm";
+        sResultFilename += "_mirror.pgm";
 
         if (checkCmdLineFlag(argc, (const char **)argv, "output"))
         {
             char *outputFilePath;
-            getCmdLineArgumentString(argc, (const char **)argv, "output",
-                                     &outputFilePath);
+            getCmdLineArgumentString(argc, (const char **)argv, "output", &outputFilePath);
             sResultFilename = outputFilePath;
         }
 
-        // declare a host image object for an 8-bit grayscale image
+        // Host and Device image objects
         npp::ImageCPU_8u_C1 oHostSrc;
-        // load gray-scale image from disk
         npp::loadImage(sFilename, oHostSrc);
-        // declare a device image and copy construct from the host image,
-        // i.e. upload host to device
+
         npp::ImageNPP_8u_C1 oDeviceSrc(oHostSrc);
+        npp::ImageNPP_8u_C1 oDeviceDst(oDeviceSrc.size());
 
-        // create struct with the ROI size
-        NppiSize oSrcSize = {(int)oDeviceSrc.width(), (int)oDeviceSrc.height()};
-        NppiPoint oSrcOffset = {0, 0};
-        NppiSize oSizeROI = {(int)oDeviceSrc.width(), (int)oDeviceSrc.height()};
+        // Perform horizontal flip (mirror)
+        NPP_CHECK_NPP(nppiMirror_8u_C1R(
+            oDeviceSrc.data(), oDeviceSrc.pitch(),
+            oDeviceDst.data(), oDeviceDst.pitch(),
+            { (int)oDeviceSrc.width(), (int)oDeviceSrc.height() },
+            NPP_HORIZONTAL));
 
-        // Calculate the bounding box of the rotated image
-        NppiRect oBoundingBox;
-        double angle = 45.0; // Rotation angle in degrees
-        NPP_CHECK_NPP(nppiGetRotateBound(oSrcSize, angle, &oBoundingBox));
-
-        // allocate device image for the rotated image
-        npp::ImageNPP_8u_C1 oDeviceDst(oBoundingBox.width, oBoundingBox.height);
-
-        // Set the rotation point (center of the image)
-        NppiPoint oRotationCenter = {(int)(oSrcSize.width / 2), (int)(oSrcSize.height / 2)};
-
-        // run the rotation
-        NPP_CHECK_NPP(nppiRotate_8u_C1R(
-            oDeviceSrc.data(), oSrcSize, oDeviceSrc.pitch(), oSrcOffset,
-            oDeviceDst.data(), oDeviceDst.pitch(), oBoundingBox, angle, oRotationCenter,
-            NPPI_INTER_NN));
-
-        // declare a host image for the result
         npp::ImageCPU_8u_C1 oHostDst(oDeviceDst.size());
-        // and copy the device result data into it
         oDeviceDst.copyTo(oHostDst.data(), oHostDst.pitch());
 
         saveImage(sResultFilename, oHostDst);
-        std::cout << "Saved image: " << sResultFilename << std::endl;
+        std::cout << "Saved mirror image to: " << sResultFilename << std::endl;
 
         nppiFree(oDeviceSrc.data());
         nppiFree(oDeviceDst.data());
@@ -191,19 +139,13 @@ int main(int argc, char *argv[])
     }
     catch (npp::Exception &rException)
     {
-        std::cerr << "Program error! The following exception occurred: \n";
-        std::cerr << rException << std::endl;
-        std::cerr << "Aborting." << std::endl;
-
+        std::cerr << "NPP Exception:\n" << rException << std::endl;
         exit(EXIT_FAILURE);
     }
     catch (...)
     {
-        std::cerr << "Program error! An unknown type of exception occurred. \n";
-        std::cerr << "Aborting." << std::endl;
-
+        std::cerr << "Unknown exception occurred.\n";
         exit(EXIT_FAILURE);
-        return -1;
     }
 
     return 0;
